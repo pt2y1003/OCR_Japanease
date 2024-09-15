@@ -19,6 +19,8 @@ parser.add_argument('--cpu', action='store_true', help="CPU mode (no GPU)")
 parser.add_argument('--output_format', type=str, default="row", help="output format", choices=['row', 'json'])
 parser.add_argument('--output_detect_img', action='store_true', help="output detected bounding box")
 parser.add_argument('--low_gpu_memory', action='store_true', help="reduce gpu memory usage")
+parser.add_argument('--compe', action='store_true', help="outputs formatted for the competition")
+
 args = parser.parse_args()
 
 def main():
@@ -31,8 +33,11 @@ def main():
         else:
             print('Input file "%s" in not file or directory.'%file)
             return
-    ocr_result = get_ocr(d, dpi=args.dpi, use_cuda=(not args.cpu), output_detect_img=args.output_detect_img, low_gpu_memory=args.low_gpu_memory)
-    if args.output_format == 'json':
+    ocr_result = get_ocr(d, dpi=args.dpi, use_cuda=(not args.cpu), output_detect_img=args.output_detect_img, 
+                        low_gpu_memory=args.low_gpu_memory, compe=args.compe)
+    if args.compe:
+        print(ocr_result)
+    elif args.output_format == 'json':
         print(json.dumps(ocr_result, ensure_ascii=False))
     else:
         for r in ocr_result:
@@ -57,7 +62,7 @@ def filter_block(sent):
                 if bef and aft:
                     sent[i] = filter_word[j][1]
 
-def get_ocr(filelist,dpi,use_cuda=True,output_detect_img=False,low_gpu_memory=False):
+def get_ocr(filelist,dpi,use_cuda=True,output_detect_img=False,low_gpu_memory=False, compe=False):
     det_model = 'models/detectionnet.model'
     cls_model = 'models/classifiernet.model'
     if not (os.path.isfile(det_model) and os.path.isfile(cls_model)):
@@ -101,13 +106,16 @@ def get_ocr(filelist,dpi,use_cuda=True,output_detect_img=False,low_gpu_memory=Fa
     del model
     torch.cuda.empty_cache()
     results = []
+    results2 = {}
     for file, dtct, bbox in zip(filelist, detections, boundings):
         detected_dpi, _, gray_img, scale_image, _ = dtct
         detect_file = {'filename':file,'detected_dpi':detected_dpi,'blocks':[]}
         if output_detect_img:
             detect_img = cv2.imread(file, cv2.IMREAD_GRAYSCALE)
+            # print(detect_img.shape)
             detect_img = cv2.cvtColor(detect_img, cv2.COLOR_GRAY2RGB)
         if len(bbox) > 0:
+            # print(max([b.sentenceindex for b in bbox]))
             for i in range(max([b.sentenceindex for b in bbox])+1):
                 bbox_sent = [b for b in bbox if b.sentenceindex == i]
                 cbox = column_wordlines(bbox_sent)
@@ -147,10 +155,41 @@ def get_ocr(filelist,dpi,use_cuda=True,output_detect_img=False,low_gpu_memory=Fa
                         x2 = max([b['box'][2] for b in bb])
                         y2 = max([b['box'][3] for b in bb])
                         cv2.rectangle(detect_img, (x1,y1), (x2,y2), (0,255,0), 2)
+                        results2[(x1,y1)]=sent
                         cv2.putText(detect_img, '#%d'%block_one['id'], (x1,y1), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
         if output_detect_img:
             cv2.imwrite(file+'-detections.png', detect_img)
         results.append(detect_file)
+        # print(detect_file)
+        if compe:
+            sorted_results2 = sorted(results2.items(), key=lambda item: item[0][1])
+            print(sorted_results2)
+
+            xs = np.empty(0)
+            ys = np.empty(0)
+            sorted_texts = []
+            for i,tp in enumerate(sorted_results2):
+                ((x_current, y_current), txt) = tp
+                # 運営のルール実装
+                my_condition = (ys >= y_current - 10) & (xs > x_current)
+
+                if sum(my_condition) > 0:
+                    position_to_insert = np.min(np.where(my_condition)[0])
+                    print(position_to_insert)
+                    xs = np.insert(xs, position_to_insert, x_current)
+                    ys = np.insert(ys, position_to_insert, y_current)   
+                    sorted_texts.insert(position_to_insert, txt)
+                else:
+                    xs = np.append(xs, x_current)
+                    ys = np.append(ys, y_current)
+                    sorted_texts.append(txt)   
+
+            # テキストを1つの文字列にまとめる
+            result_texts = '\t'.join(text for text in sorted_texts)
+            result_texts = file + '\t' + result_texts
+            # print(result_texts)
+            results = result_texts
+
     return results
 
 if __name__ == '__main__':
